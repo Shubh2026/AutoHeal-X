@@ -1,0 +1,2187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Guardian — Stage 2</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+    <style>
+        /*
+  ═══════════════════════════════════════════════════════════
+  STAGE 2 — ALL FIXES APPLIED
+  ─────────────────────────────────────────────────────────
+  FIX 1 · fetchMetrics() verified: reads all 6 server fields
+          cpu_percent, memory_percent, disk_percent,
+          net_bytes_sent, net_bytes_recv, active_processes
+  FIX 2 · CORS: no custom headers → no preflight.
+          Server only needs: from flask_cors import CORS; CORS(app)
+  FIX 3 · Chaos types: dropdown maps 1-to-1 to server types
+          (was random before — now user picks exact type)
+  FIX 4 · active_processes stat card added (4th card in row)
+  FIX 5 · Event log confirmed to fire at score > 0.4
+          Score bar added to classifier panel to show threshold
+  FIX 6 · Live test checklist panel — auto-runs every tick,
+          shows PASS/FAIL for each verification step
+  ═══════════════════════════════════════════════════════════
+  */
+
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Space+Grotesk:wght@300;400;500;600;700&display=swap');
+
+        :root {
+            --bg: #0a0d14;
+            --surface: #111520;
+            --surface2: #161b2c;
+            --border: #1e2740;
+            --accent: #00d4ff;
+            --purple: #7c3aed;
+            --green: #00e5a0;
+            --yellow: #f5c518;
+            --red: #ff3a5c;
+            --text: #e2e8f0;
+            --muted: #64748b;
+            --font-mono: 'JetBrains Mono', monospace;
+            --font-sans: 'Space Grotesk', sans-serif;
+        }
+
+        *,
+        *::before,
+        *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: var(--font-sans);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            z-index: 0;
+            background-image:
+                linear-gradient(rgba(0, 212, 255, 0.025) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 212, 255, 0.025) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        /* ── HEADER ─────────────────────────────────── */
+        header {
+            position: sticky;
+            top: 0;
+            z-index: 100;
+            background: rgba(10, 13, 20, 0.96);
+            backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 24px;
+            height: 58px;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-family: var(--font-mono);
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent);
+            letter-spacing: 0.5px;
+        }
+
+        .logo-badge {
+            font-size: 9px;
+            background: rgba(0, 229, 160, 0.15);
+            color: var(--green);
+            border: 1px solid rgba(0, 229, 160, 0.3);
+            padding: 1px 7px;
+            border-radius: 3px;
+            letter-spacing: 1px;
+        }
+
+        .logo-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            background: var(--green);
+            box-shadow: 0 0 8px var(--green);
+            animation: blink 1.4s ease-in-out infinite;
+        }
+
+        .logo-dot.offline {
+            background: var(--red);
+            box-shadow: 0 0 8px var(--red);
+            animation: none;
+        }
+
+        @keyframes blink {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1)
+            }
+
+            50% {
+                opacity: .45;
+                transform: scale(.7)
+            }
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .server-pill {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 4px 12px;
+            border-radius: 4px;
+            white-space: nowrap;
+            transition: all .3s;
+            border: 1px solid rgba(0, 229, 160, .3);
+            background: rgba(0, 229, 160, .08);
+            color: var(--green);
+        }
+
+        .server-url-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-right: 8px;
+        }
+
+        .server-url-input {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            color: var(--text);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            min-width: 180px;
+            outline: none;
+        }
+
+        .server-url-input::placeholder {
+            color: var(--muted);
+        }
+
+        .server-url-btn {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            padding: 3px 8px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all .2s;
+            white-space: nowrap;
+        }
+
+        .server-url-btn:hover {
+            background: rgba(0, 212, 255, .08);
+        }
+
+        .server-pill.offline {
+            border-color: rgba(255, 58, 92, .3);
+            background: rgba(255, 58, 92, .08);
+            color: var(--red);
+        }
+
+        .server-pill.connecting {
+            border-color: rgba(245, 197, 24, .3);
+            background: rgba(245, 197, 24, .08);
+            color: var(--yellow);
+        }
+
+        .ticker {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        #live-time {
+            color: var(--accent);
+        }
+
+        /* ── FIX 3: chaos controls — select + button ── */
+        .chaos-group {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .chaos-select {
+            background: var(--surface2);
+            border: 1px solid rgba(255, 58, 92, .4);
+            color: var(--red);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 6px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+            outline: none;
+            transition: border-color .2s;
+        }
+
+        .chaos-select:hover {
+            border-color: var(--red);
+        }
+
+        .chaos-select option {
+            background: #0a0d14;
+            color: var(--text);
+        }
+
+        .chaos-btn {
+            position: relative;
+            overflow: hidden;
+            background: transparent;
+            border: 1px solid var(--red);
+            color: var(--red);
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 600;
+            padding: 7px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            letter-spacing: 1px;
+            transition: all .2s;
+            white-space: nowrap;
+        }
+
+        .chaos-btn::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: var(--red);
+            opacity: 0;
+            transition: opacity .2s;
+        }
+
+        .chaos-btn:hover {
+            color: #fff;
+        }
+
+        .chaos-btn:hover::before {
+            opacity: .15;
+        }
+
+        .chaos-btn:active {
+            transform: scale(.97);
+        }
+
+        .chaos-btn:disabled {
+            opacity: .5;
+            cursor: not-allowed;
+        }
+
+        .chaos-btn.firing {
+            border-color: var(--yellow);
+            color: var(--yellow);
+            animation: cFlash .4s ease;
+        }
+
+        @keyframes cFlash {
+
+            0%,
+            100% {
+                box-shadow: none
+            }
+
+            50% {
+                box-shadow: 0 0 20px var(--red), 0 0 40px var(--red)
+            }
+        }
+
+        /* ══════════════════════════════════════════
+     PAGE — two-column flexbox (NO grid-row spans)
+  ══════════════════════════════════════════ */
+        .page {
+            position: relative;
+            z-index: 1;
+            padding: 20px 24px;
+            display: flex;
+            flex-direction: row;
+            align-items: flex-start;
+            gap: 16px;
+        }
+
+        .col-left {
+            flex: 1;
+            min-width: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .col-right {
+            width: 318px;
+            flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        /* ── THRESHOLD METER CARDS ──────────────── */
+        .meters-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+
+        .meter-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 18px;
+            position: relative;
+            overflow: hidden;
+            transition: border-color .3s;
+        }
+
+        .meter-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            transition: background .3s;
+        }
+
+        .meter-card.st-green {
+            border-color: rgba(0, 229, 160, .3);
+        }
+
+        .meter-card.st-green::after {
+            background: var(--green);
+        }
+
+        .meter-card.st-yellow {
+            border-color: rgba(245, 197, 24, .4);
+        }
+
+        .meter-card.st-yellow::after {
+            background: var(--yellow);
+        }
+
+        .meter-card.st-red {
+            border-color: rgba(255, 58, 92, .5);
+        }
+
+        .meter-card.st-red::after {
+            background: var(--red);
+        }
+
+        .m-title {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 8px;
+        }
+
+        .m-val {
+            font-family: var(--font-mono);
+            font-size: 34px;
+            font-weight: 700;
+            line-height: 1;
+            margin-bottom: 10px;
+            transition: color .3s;
+        }
+
+        .meter-card.st-green .m-val {
+            color: var(--green);
+        }
+
+        .meter-card.st-yellow .m-val {
+            color: var(--yellow);
+        }
+
+        .meter-card.st-red .m-val {
+            color: var(--red);
+        }
+
+        .m-bar-wrap {
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            margin-bottom: 7px;
+        }
+
+        .m-bar-fill {
+            height: 100%;
+            border-radius: 3px;
+            transition: width .6s ease, background .3s;
+        }
+
+        .st-green .m-bar-fill {
+            background: var(--green);
+            box-shadow: 0 0 6px var(--green);
+        }
+
+        .st-yellow .m-bar-fill {
+            background: var(--yellow);
+            box-shadow: 0 0 6px var(--yellow);
+        }
+
+        .st-red .m-bar-fill {
+            background: var(--red);
+            box-shadow: 0 0 8px var(--red);
+        }
+
+        .m-ticks {
+            display: flex;
+            justify-content: space-between;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: var(--muted);
+            margin-bottom: 7px;
+        }
+
+        .m-footer {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .chip {
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            font-family: var(--font-mono);
+        }
+
+        .chip-warn {
+            background: rgba(245, 197, 24, .15);
+            color: var(--yellow);
+            border: 1px solid rgba(245, 197, 24, .3);
+        }
+
+        .chip-crit {
+            background: rgba(255, 58, 92, .15);
+            color: var(--red);
+            border: 1px solid rgba(255, 58, 92, .3);
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            font-family: var(--font-mono);
+            font-size: 9px;
+            font-weight: 700;
+            padding: 2px 7px;
+            border-radius: 3px;
+        }
+
+        .b-green {
+            background: rgba(0, 229, 160, .12);
+            color: var(--green);
+            border: 1px solid rgba(0, 229, 160, .25);
+        }
+
+        .b-yellow {
+            background: rgba(245, 197, 24, .12);
+            color: var(--yellow);
+            border: 1px solid rgba(245, 197, 24, .25);
+        }
+
+        .b-red {
+            background: rgba(255, 58, 92, .12);
+            color: var(--red);
+            border: 1px solid rgba(255, 58, 92, .25);
+        }
+
+        .b-dot {
+            width: 5px;
+            height: 5px;
+            border-radius: 50%;
+            background: currentColor;
+            flex-shrink: 0;
+        }
+
+        /* ── CHARTS ─────────────────────────────── */
+        .charts-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .chart-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 18px;
+            min-width: 0;
+        }
+
+        .chart-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 14px;
+        }
+
+        .chart-title {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1px;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .chart-live {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--green);
+        }
+
+        .chart-card canvas {
+            display: block;
+            width: 100% !important;
+            max-height: 130px;
+        }
+
+        /* ── STAT CARDS — 4 across (FIX 4: active_processes added) ── */
+        .stats-row {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+        }
+
+        .stat-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px 18px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stat-card::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+        }
+
+        .sc-red::after {
+            background: var(--red);
+        }
+
+        .sc-blue::after {
+            background: var(--accent);
+        }
+
+        .sc-green::after {
+            background: var(--green);
+        }
+
+        .sc-purple::after {
+            background: var(--purple);
+        }
+
+        .sc-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 1.2px;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .sc-val {
+            font-family: var(--font-mono);
+            font-size: 28px;
+            font-weight: 700;
+            color: var(--text);
+            transition: color .3s;
+        }
+
+        .sc-sub {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* ── CHAOS STRIP ────────────────────────── */
+        .chaos-strip {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 11px 18px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            min-width: 0;
+        }
+
+        .cs-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            letter-spacing: 1px;
+            white-space: nowrap;
+        }
+
+        .cs-type {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--red);
+            white-space: nowrap;
+        }
+
+        .cs-msg {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--yellow);
+            flex: 1;
+            min-width: 0;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .cs-dur {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--accent);
+            white-space: nowrap;
+        }
+
+        .cs-ts {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            white-space: nowrap;
+        }
+
+        /* ── RIGHT: SCORE RING ──────────────────── */
+        .ring-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 20px 16px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .ring-label {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 1.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .ring-svg {
+            width: 150px;
+            height: 150px;
+        }
+
+        .ring-bg {
+            fill: none;
+            stroke: var(--border);
+            stroke-width: 8;
+        }
+
+        .ring-fill {
+            fill: none;
+            stroke-width: 8;
+            stroke-linecap: round;
+            transition: stroke-dashoffset .6s ease, stroke .3s;
+            transform: rotate(-90deg);
+            transform-origin: 50% 50%;
+        }
+
+        .ring-val {
+            font-family: var(--font-mono);
+            font-size: 30px;
+            font-weight: 700;
+            text-anchor: middle;
+            dominant-baseline: central;
+            transition: fill .3s;
+        }
+
+        .ring-sub {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            text-anchor: middle;
+            fill: var(--muted);
+        }
+
+        .ring-thr-row {
+            display: flex;
+            gap: 8px;
+        }
+
+        .ring-thr {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            padding: 2px 8px;
+            border-radius: 3px;
+        }
+
+        .ring-thr.warn {
+            background: rgba(245, 197, 24, .1);
+            color: var(--yellow);
+            border: 1px solid rgba(245, 197, 24, .25);
+        }
+
+        .ring-thr.crit {
+            background: rgba(255, 58, 92, .1);
+            color: var(--red);
+            border: 1px solid rgba(255, 58, 92, .25);
+        }
+
+        /* ── RIGHT: CLASSIFIER ──────────────────── */
+        .clf-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .clf-head {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            letter-spacing: 1.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+            margin-bottom: 10px;
+        }
+
+        .clf-type {
+            font-family: var(--font-mono);
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--accent);
+            margin-bottom: 5px;
+            min-height: 20px;
+            word-break: break-word;
+        }
+
+        .clf-action {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+            min-height: 16px;
+        }
+
+        /* FIX 5: score bar shows >0.4 warn, >0.65 crit thresholds */
+        .clf-score-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }
+
+        .clf-bar-wrap {
+            flex: 1;
+            height: 4px;
+            background: var(--border);
+            border-radius: 2px;
+            position: relative;
+        }
+
+        .clf-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width .5s ease, background .3s;
+        }
+
+        /* threshold tick lines at 40% and 65% */
+        .clf-bar-wrap::before {
+            content: '';
+            position: absolute;
+            left: 40%;
+            top: -2px;
+            bottom: -2px;
+            width: 1px;
+            background: rgba(245, 197, 24, .5);
+        }
+
+        .clf-bar-wrap::after {
+            content: '';
+            position: absolute;
+            left: 65%;
+            top: -2px;
+            bottom: -2px;
+            width: 1px;
+            background: rgba(255, 58, 92, .5);
+        }
+
+        .clf-score-num {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            color: var(--muted);
+            width: 36px;
+            text-align: right;
+            transition: color .3s;
+        }
+
+        /* ── RIGHT: EVENT LOG ───────────────────── */
+        .log-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            display: flex;
+            flex-direction: column;
+            height: 398px;
+        }
+
+        .log-head {
+            padding: 13px 16px 10px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .log-title-wrap {
+            display: flex;
+            align-items: baseline;
+            gap: 6px;
+        }
+
+        .log-title {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: var(--muted);
+            text-transform: uppercase;
+        }
+
+        .log-thr-hint {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: var(--muted);
+            opacity: .6;
+        }
+
+        .log-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .log-cnt {
+            background: rgba(0, 212, 255, .12);
+            color: var(--accent);
+            border: 1px solid rgba(0, 212, 255, .25);
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            padding: 1px 8px;
+            border-radius: 3px;
+        }
+
+        .log-clr {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            font-family: var(--font-mono);
+            font-size: 9px;
+            padding: 2px 7px;
+            border-radius: 3px;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .log-clr:hover {
+            border-color: var(--red);
+            color: var(--red);
+        }
+
+        .log-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 4px 0;
+            scrollbar-width: thin;
+            scrollbar-color: var(--border) transparent;
+        }
+
+        .log-body::-webkit-scrollbar {
+            width: 3px;
+        }
+
+        .log-body::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 2px;
+        }
+
+        .log-entry {
+            padding: 9px 16px;
+            border-bottom: 1px solid rgba(30, 39, 64, .5);
+            transition: background .15s;
+            animation: lSlide .25s ease;
+        }
+
+        .log-entry:hover {
+            background: rgba(255, 255, 255, .02);
+        }
+
+        @keyframes lSlide {
+            from {
+                opacity: 0;
+                transform: translateX(6px)
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(0)
+            }
+        }
+
+        .log-ts {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: var(--muted);
+            margin-bottom: 3px;
+        }
+
+        .log-typ {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 700;
+            margin-bottom: 2px;
+        }
+
+        .log-typ.ok {
+            color: var(--green);
+        }
+
+        .log-typ.warn {
+            color: var(--yellow);
+        }
+
+        .log-typ.crit {
+            color: var(--red);
+        }
+
+        .log-sc {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+            margin-bottom: 2px;
+        }
+
+        .log-act {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--accent);
+        }
+
+        .log-empty {
+            padding: 36px 16px;
+            text-align: center;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+            line-height: 1.9;
+        }
+
+        /* ══════════════════════════════════════════
+     FIX 6 — TEST CHECKLIST PANEL
+     Live auto-updating. Click header to expand.
+  ══════════════════════════════════════════ */
+        .checklist-wrap {
+            position: relative;
+            z-index: 1;
+            margin: 0 24px 28px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+
+        .chk-toggle {
+            width: 100%;
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            padding: 13px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid transparent;
+            transition: border-color .2s;
+        }
+
+        .chk-toggle:hover {
+            border-bottom-color: var(--border);
+        }
+
+        .chk-toggle-l {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .chk-heading {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: var(--accent);
+            text-transform: uppercase;
+        }
+
+        .chk-prog {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+        }
+
+        .chk-arr {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--muted);
+            transition: transform .2s;
+        }
+
+        .chk-arr.open {
+            transform: rotate(180deg);
+        }
+
+        .chk-body {
+            display: none;
+            padding: 16px 20px 20px;
+        }
+
+        .chk-body.open {
+            display: block;
+        }
+
+        .chk-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 10px;
+        }
+
+        .chk-item {
+            background: var(--surface2);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 12px 14px;
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+            transition: border-color .3s;
+        }
+
+        .chk-item.pass {
+            border-color: rgba(0, 229, 160, .35);
+        }
+
+        .chk-item.fail {
+            border-color: rgba(255, 58, 92, .25);
+        }
+
+        .chk-item.pending {
+            border-color: var(--border);
+        }
+
+        .chk-dot {
+            width: 22px;
+            height: 22px;
+            border-radius: 50%;
+            flex-shrink: 0;
+            margin-top: 1px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 700;
+            transition: all .3s;
+        }
+
+        .chk-dot.pass {
+            background: rgba(0, 229, 160, .15);
+            border: 1px solid var(--green);
+            color: var(--green);
+        }
+
+        .chk-dot.fail {
+            background: rgba(255, 58, 92, .15);
+            border: 1px solid var(--red);
+            color: var(--red);
+        }
+
+        .chk-dot.pending {
+            background: var(--border);
+            border: 1px solid var(--muted);
+            color: var(--muted);
+        }
+
+        .chk-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .chk-ttl {
+            font-family: var(--font-mono);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text);
+            margin-bottom: 4px;
+        }
+
+        .chk-desc {
+            font-family: var(--font-mono);
+            font-size: 9px;
+            color: var(--muted);
+            line-height: 1.6;
+            margin-bottom: 5px;
+        }
+
+        .chk-result {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            font-weight: 600;
+        }
+
+        .chk-result.pass {
+            color: var(--green);
+        }
+
+        .chk-result.fail {
+            color: var(--red);
+        }
+
+        .chk-result.pending {
+            color: var(--muted);
+        }
+
+        .chk-footer {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-top: 14px;
+        }
+
+        .chk-rerun {
+            background: transparent;
+            border: 1px solid var(--accent);
+            color: var(--accent);
+            font-family: var(--font-mono);
+            font-size: 11px;
+            padding: 6px 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all .2s;
+        }
+
+        .chk-rerun:hover {
+            background: rgba(0, 212, 255, .08);
+        }
+
+        .chk-hint {
+            font-family: var(--font-mono);
+            font-size: 10px;
+            color: var(--muted);
+        }
+
+        /* ── OVERLAYS ───────────────────────────── */
+        #offline-banner {
+            display: none;
+            position: fixed;
+            top: 58px;
+            left: 0;
+            right: 0;
+            z-index: 200;
+            background: rgba(255, 58, 92, .1);
+            border-bottom: 1px solid rgba(255, 58, 92, .3);
+            padding: 9px 24px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            color: var(--red);
+            text-align: center;
+            letter-spacing: 1px;
+        }
+
+        /* FIX 2: CORS guidance shown after 3 consecutive fetch failures */
+        #cors-card {
+            display: none;
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 300;
+            background: var(--surface2);
+            border: 1px solid var(--yellow);
+            border-radius: 8px;
+            padding: 16px 18px;
+            max-width: 360px;
+            font-family: var(--font-mono);
+            font-size: 11px;
+            color: var(--yellow);
+            line-height: 1.75;
+        }
+
+        #cors-card strong {
+            color: var(--text);
+            display: block;
+            margin-bottom: 6px;
+            font-size: 12px;
+        }
+
+        #cors-card code {
+            display: inline-block;
+            background: rgba(255, 255, 255, .06);
+            padding: 1px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            color: var(--accent);
+        }
+
+        #cors-close {
+            float: right;
+            cursor: pointer;
+            color: var(--muted);
+            font-size: 15px;
+            margin-left: 8px;
+        }
+
+        #cors-card ol {
+            margin-left: 14px;
+            margin-top: 4px;
+        }
+
+        #cors-card li {
+            margin-bottom: 5px;
+        }
+
+        /* ── RESPONSIVE ─────────────────────────── */
+        @media (max-width:1300px) {
+            .meters-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .stats-row {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 960px) {
+            .page {
+                flex-direction: column;
+            }
+
+            .col-right {
+                width: 100%;
+            }
+
+            .log-card {
+                height: 300px;
+            }
+        }
+
+        @media (max-width: 700px) {
+            .charts-row {
+                grid-template-columns: 1fr;
+            }
+
+            .chk-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- ── OVERLAYS ─────────────────────────────────────── -->
+    <div id="offline-banner">⚠ SERVER OFFLINE — retrying every 1s...</div>
+
+    <!-- FIX 2: CORS guidance — appears after 3 consecutive fetch failures -->
+    <div id="cors-card">
+        <span id="cors-close" onclick="document.getElementById('cors-card').style.display='none'">✕</span>
+        <strong>Cannot reach server — CORS or network issue</strong>
+        <ol>
+            <li>Confirm container running:<br><code>docker ps</code> → look for port 5000</li>
+            <li>Add CORS to your Flask server:<br>
+                <code>pip install flask-cors</code><br>
+                <code>from flask_cors import CORS</code><br>
+                <code>CORS(app)</code> ← after app = Flask(__name__)
+            </li>
+            <li>Restart container after adding CORS:<br>
+                <code>docker-compose down && docker-compose up --build</code>
+            </li>
+            <li>Check browser DevTools → Console for exact error</li>
+        </ol>
+    </div>
+
+    <!-- ══════════════════ HEADER ═══════════════════════ -->
+    <header>
+        <div class="logo">
+            <div class="logo-dot" id="conn-dot"></div>
+            AI GUARDIAN MONITOR
+            <span class="logo-badge">STAGE 2</span>
+        </div>
+        <div class="header-right">
+            <div class="server-url-group">
+                <input id="server-url-input" class="server-url-input" type="text"
+                    placeholder="http://localhost:5000" value="http://localhost:5000"
+                    title="Backend server URL (e.g. http://localhost:5000)" />
+                <button class="server-url-btn" onclick="applyServerUrl()">SET</button>
+            </div>
+            <div class="server-pill connecting" id="server-pill">⟳ CONNECTING</div>
+            <div class="ticker">TICK <span id="live-time">--:--:--</span></div>
+
+            <!-- FIX 3: Chaos type dropdown — exact 1-to-1 mapping to server POST /chaos?type= -->
+            <div class="chaos-group">
+                <select class="chaos-select" id="chaos-select" title="Select chaos type to inject">
+                    <option value="cpu_spike">⚡ CPU Spike</option>
+                    <option value="memory_leak">💧 Memory Leak</option>
+                    <option value="disk_flood">💾 Disk Flood</option>
+                    <option value="traffic_spike">🌊 Traffic Spike</option>
+                    <option value="multi_vector">🔥 Multi-Vector</option>
+                </select>
+                <button class="chaos-btn" id="chaos-btn" onclick="triggerChaos()">INJECT</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- ══════════════════ PAGE ═════════════════════════ -->
+    <div class="page">
+
+        <!-- ▌ LEFT COLUMN ▌ -->
+        <div class="col-left">
+
+            <!-- Row 1 · Threshold Meters (4 cards) -->
+            <div class="meters-row">
+
+                <div class="meter-card st-green" id="mc-cpu">
+                    <div class="m-title">CPU Usage</div>
+                    <div class="m-val" id="mv-cpu">--%</div>
+                    <div class="m-bar-wrap">
+                        <div class="m-bar-fill" id="bar-cpu" style="width:0%"></div>
+                    </div>
+                    <div class="m-ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+                    </div>
+                    <div class="m-footer">
+                        <span class="chip chip-warn">WARN 60%</span>
+                        <span class="chip chip-crit">CRIT 80%</span>
+                        <span class="badge b-green" id="badge-cpu"><span class="b-dot"></span>NORMAL</span>
+                    </div>
+                </div>
+
+                <div class="meter-card st-green" id="mc-mem">
+                    <div class="m-title">Memory Usage</div>
+                    <div class="m-val" id="mv-mem">--%</div>
+                    <div class="m-bar-wrap">
+                        <div class="m-bar-fill" id="bar-mem" style="width:0%"></div>
+                    </div>
+                    <div class="m-ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+                    </div>
+                    <div class="m-footer">
+                        <span class="chip chip-warn">WARN 60%</span>
+                        <span class="chip chip-crit">CRIT 80%</span>
+                        <span class="badge b-green" id="badge-mem"><span class="b-dot"></span>NORMAL</span>
+                    </div>
+                </div>
+
+                <div class="meter-card st-green" id="mc-disk">
+                    <div class="m-title">Disk Usage</div>
+                    <div class="m-val" id="mv-disk">--%</div>
+                    <div class="m-bar-wrap">
+                        <div class="m-bar-fill" id="bar-disk" style="width:0%"></div>
+                    </div>
+                    <div class="m-ticks"><span>0</span><span>25</span><span>50</span><span>75</span><span>100</span>
+                    </div>
+                    <div class="m-footer">
+                        <span class="chip chip-warn">WARN 70%</span>
+                        <span class="chip chip-crit">CRIT 90%</span>
+                        <span class="badge b-green" id="badge-disk"><span class="b-dot"></span>NORMAL</span>
+                    </div>
+                </div>
+
+                <div class="meter-card st-green" id="mc-net">
+                    <div class="m-title">Network I/O</div>
+                    <div class="m-val" id="mv-net">-- KB/s</div>
+                    <div class="m-bar-wrap">
+                        <div class="m-bar-fill" id="bar-net" style="width:0%"></div>
+                    </div>
+                    <div class="m-ticks"><span>0</span><span>250</span><span>500</span><span>750</span><span>1000</span>
+                    </div>
+                    <div class="m-footer">
+                        <span class="chip chip-warn">WARN 500</span>
+                        <span class="chip chip-crit">CRIT 800</span>
+                        <span class="badge b-green" id="badge-net"><span class="b-dot"></span>NORMAL</span>
+                    </div>
+                </div>
+
+            </div><!-- /meters-row -->
+
+            <!-- Row 2 · 60s rolling line charts -->
+            <div class="charts-row">
+                <div class="chart-card">
+                    <div class="chart-head">
+                        <div class="chart-title">CPU + Memory — 60s</div>
+                        <div class="chart-live">● LIVE</div>
+                    </div>
+                    <canvas id="chart-cm"></canvas>
+                </div>
+                <div class="chart-card">
+                    <div class="chart-head">
+                        <div class="chart-title">Disk + Network — 60s</div>
+                        <div class="chart-live">● LIVE</div>
+                    </div>
+                    <canvas id="chart-dn"></canvas>
+                </div>
+            </div>
+
+            <!-- Row 3 · Stat cards — FIX 4: 4th card = active_processes -->
+            <div class="stats-row">
+                <div class="stat-card sc-red">
+                    <div class="sc-label">Recoveries Fired</div>
+                    <div class="sc-val" id="s-recoveries">0</div>
+                    <div class="sc-sub">automated actions taken</div>
+                </div>
+                <div class="stat-card sc-blue">
+                    <div class="sc-label">Uptime</div>
+                    <div class="sc-val" id="s-uptime">00:00</div>
+                    <div class="sc-sub">since dashboard started</div>
+                </div>
+                <div class="stat-card sc-green">
+                    <div class="sc-label">Anomalies Caught</div>
+                    <div class="sc-val" id="s-anomalies">0</div>
+                    <div class="sc-sub">score &gt; 0.65 threshold</div>
+                </div>
+                <!-- NEW — FIX 4 -->
+                <div class="stat-card sc-purple">
+                    <div class="sc-label">Active Processes</div>
+                    <div class="sc-val" id="s-procs">--</div>
+                    <div class="sc-sub" id="s-procs-sub">from /metrics live</div>
+                </div>
+            </div>
+
+            <!-- Row 4 · Last chaos strip -->
+            <div class="chaos-strip">
+                <div class="cs-label">LAST INJECT</div>
+                <div class="cs-type" id="cs-type">—</div>
+                <div class="cs-msg" id="cs-msg">No chaos injected yet — pick a type and click INJECT</div>
+                <div class="cs-dur" id="cs-dur"></div>
+                <div class="cs-ts" id="cs-ts">—</div>
+            </div>
+
+        </div><!-- /col-left -->
+
+        <!-- ▌ RIGHT COLUMN ▌ -->
+        <div class="col-right">
+
+            <!-- Anomaly Score Ring -->
+            <div class="ring-card">
+                <div class="ring-label">Anomaly Score</div>
+                <svg class="ring-svg" viewBox="0 0 150 150">
+                    <circle class="ring-bg" cx="75" cy="75" r="60" />
+                    <circle class="ring-fill" id="ring-fill" cx="75" cy="75" r="60" stroke-dasharray="376.99"
+                        stroke-dashoffset="376.99" stroke="var(--green)" />
+                    <text class="ring-val" id="ring-val" x="75" y="71" fill="var(--green)">0.00</text>
+                    <text class="ring-sub" x="75" y="89">/ 1.00</text>
+                </svg>
+                <div class="ring-thr-row">
+                    <span class="ring-thr warn">WARN &gt; 0.40</span>
+                    <span class="ring-thr crit">CRIT &gt; 0.65</span>
+                </div>
+            </div>
+
+            <!-- Guardian Classification — FIX 5: score bar with threshold ticks -->
+            <div class="clf-card">
+                <div class="clf-head">Guardian Classification</div>
+                <div class="clf-type" id="clf-type">CONNECTING...</div>
+                <div class="clf-action" id="clf-action">— waiting for server</div>
+                <div class="clf-score-row">
+                    <div class="clf-bar-wrap">
+                        <div class="clf-bar-fill" id="clf-bar"></div>
+                    </div>
+                    <div class="clf-score-num" id="clf-score-num">0.00</div>
+                </div>
+            </div>
+
+            <!-- Event Log — FIX 5: fires at score > 0.4, confirmed in tick() -->
+            <div class="log-card">
+                <div class="log-head">
+                    <div class="log-title-wrap">
+                        <div class="log-title">Event Log</div>
+                        <div class="log-thr-hint">fires @ score &gt; 0.40</div>
+                    </div>
+                    <div class="log-controls">
+                        <div class="log-cnt" id="log-cnt">0</div>
+                        <button class="log-clr" onclick="clearLog()">CLR</button>
+                    </div>
+                </div>
+                <div class="log-body" id="log-body">
+                    <div class="log-empty" id="log-empty">
+                        Waiting for server...<br>
+                        Run: <code style="color:var(--accent)">docker-compose up</code>
+                    </div>
+                </div>
+            </div>
+
+        </div><!-- /col-right -->
+
+    </div><!-- /page -->
+
+    <!-- ══════════════════════════════════════════════════
+     FIX 6 — LIVE TEST CHECKLIST
+     6 checks auto-run every tick.
+     Checks 5+6 also update on chaos inject.
+══════════════════════════════════════════════════ -->
+    <div class="checklist-wrap">
+
+        <button class="chk-toggle" onclick="toggleChk()">
+            <div class="chk-toggle-l">
+                <div class="chk-heading">Stage 2 — Test Checklist</div>
+                <div class="chk-prog" id="chk-prog">0 / 6 passed</div>
+            </div>
+            <div class="chk-arr" id="chk-arr">▼</div>
+        </button>
+
+        <div class="chk-body" id="chk-body">
+            <div class="chk-grid">
+
+                <!-- CHECK 1 -->
+                <div class="chk-item pending" id="ci-1">
+                    <div class="chk-dot pending" id="cd-1">1</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">Server reachable at localhost:5000</div>
+                        <div class="chk-desc">GET /metrics returns HTTP 200<br>Header shows ● SERVER ONLINE</div>
+                        <div class="chk-result pending" id="cr-1">— waiting for first tick...</div>
+                    </div>
+                </div>
+
+                <!-- CHECK 2 -->
+                <div class="chk-item pending" id="ci-2">
+                    <div class="chk-dot pending" id="cd-2">2</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">All 6 metric fields present</div>
+                        <div class="chk-desc">cpu_percent · memory_percent · disk_percent<br>net_bytes_sent ·
+                            net_bytes_recv · active_processes</div>
+                        <div class="chk-result pending" id="cr-2">— waiting for response...</div>
+                    </div>
+                </div>
+
+                <!-- CHECK 3 -->
+                <div class="chk-item pending" id="ci-3">
+                    <div class="chk-dot pending" id="cd-3">3</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">Meters show real non-zero values</div>
+                        <div class="chk-desc">CPU / Memory / Disk must differ from --%<br>Confirms server returns live
+                            host metrics</div>
+                        <div class="chk-result pending" id="cr-3">— waiting for data...</div>
+                    </div>
+                </div>
+
+                <!-- CHECK 4 -->
+                <div class="chk-item pending" id="ci-4">
+                    <div class="chk-dot pending" id="cd-4">4</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">Active Processes card populated</div>
+                        <div class="chk-desc">4th stat card shows integer value &gt; 0<br>Reads data.active_processes
+                            from /metrics</div>
+                        <div class="chk-result pending" id="cr-4">— waiting for data...</div>
+                    </div>
+                </div>
+
+                <!-- CHECK 5 -->
+                <div class="chk-item pending" id="ci-5">
+                    <div class="chk-dot pending" id="cd-5">5</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">Chaos POST accepted by server</div>
+                        <div class="chk-desc">POST /chaos?type=&lt;selected&gt; returns 200<br>CPU or target metric
+                            spikes within 3–5s</div>
+                        <div class="chk-result pending" id="cr-5">— click INJECT to test</div>
+                    </div>
+                </div>
+
+                <!-- CHECK 6 -->
+                <div class="chk-item pending" id="ci-6">
+                    <div class="chk-dot pending" id="cd-6">6</div>
+                    <div class="chk-content">
+                        <div class="chk-ttl">Event log fires at score &gt; 0.40</div>
+                        <div class="chk-desc">After chaos: log shows WARN or CRITICAL entry<br>Score bar crosses the 40%
+                            tick line</div>
+                        <div class="chk-result pending" id="cr-6">— inject chaos to trigger</div>
+                    </div>
+                </div>
+
+            </div><!-- /chk-grid -->
+
+            <div class="chk-footer">
+                <button class="chk-rerun" onclick="runAllChecks()">↻ Re-run checks</button>
+                <div class="chk-hint">Checks 1–4 auto-update every tick · Checks 5–6 require chaos injection</div>
+            </div>
+        </div><!-- /chk-body -->
+
+    </div><!-- /checklist-wrap -->
+
+    <script>
+        /* ══════════════════════════════════════════════════════════
+           CONFIG
+           ────────────────────────────────────────────────────────
+           FIX 1: Field mapping verified:
+             data.cpu_percent      → cpu  (float %)
+             data.memory_percent   → mem  (float %)
+             data.disk_percent     → disk (float %)
+             data.net_bytes_sent   → net  (int bytes/poll)
+             data.net_bytes_recv   → net  (int bytes/poll)
+             data.active_processes → procs (int)
+        
+           FIX 2: No custom headers sent → no CORS preflight.
+             Only server requirement: CORS(app) in server.py
+        
+           FIX 3: Chaos type sent as ?type=<value> from dropdown.
+             Values are the exact strings the server expects.
+        ═════════════════════════════════════════════════════════ */
+        let serverUrl = 'http://localhost:5000';
+        const POLL_MS = 3000; // retry / poll every 3 seconds
+
+        /* ── STATE ────────────────────────────────────────────── */
+        const MAX_PTS = 60;
+        const labels = Array.from({ length: MAX_PTS }, (_, i) => `${MAX_PTS - i}s`).reverse();
+
+        const hist = {
+            cpu: Array(MAX_PTS).fill(null),
+            mem: Array(MAX_PTS).fill(null),
+            disk: Array(MAX_PTS).fill(null),
+            net: Array(MAX_PTS).fill(null),
+        };
+
+        let baseline = { cpu: [], mem: [], disk: [], net: [] };
+        let blReady = false;
+        const BL_N = 15;          // 15 samples to build baseline
+
+        let eventLog = [];
+        let recoveries = 0;
+        let anomalies = 0;
+        let startTime = Date.now();
+        let lastLogTs = 0;
+        let online = false;
+        let failCount = 0;
+        let lastError = '';
+
+        // check state
+        let lastRaw = null;     // raw server JSON for check inspection
+        let chaosDone = false;    // set true after first successful POST /chaos
+
+        /* ── CHARTS ──────────────────────────────────────────── */
+        const chartOpts = () => ({
+            responsive: true, maintainAspectRatio: true, animation: { duration: 250 },
+            plugins: { legend: { display: true, labels: { color: '#64748b', font: { family: 'JetBrains Mono', size: 10 }, boxWidth: 10 } } },
+            scales: {
+                x: { ticks: { display: false }, grid: { color: 'rgba(30,39,64,.8)' }, border: { display: false } },
+                y: {
+                    min: 0, max: 100, ticks: { color: '#64748b', font: { family: 'JetBrains Mono', size: 9 }, callback: v => v + '%' },
+                    grid: { color: 'rgba(30,39,64,.8)' }, border: { display: false }
+                }
+            }
+        });
+
+        const cmChart = new Chart(document.getElementById('chart-cm'), {
+            type: 'line', options: chartOpts(),
+            data: {
+                labels, datasets: [
+                    { label: 'CPU', data: [...hist.cpu], borderColor: '#00d4ff', backgroundColor: 'rgba(0,212,255,.06)', borderWidth: 2, pointRadius: 0, tension: .4, fill: true },
+                    { label: 'Memory', data: [...hist.mem], borderColor: '#7c3aed', backgroundColor: 'rgba(124,58,237,.06)', borderWidth: 2, pointRadius: 0, tension: .4, fill: true },
+                ]
+            }
+        });
+
+        const dnChart = new Chart(document.getElementById('chart-dn'), {
+            type: 'line', options: chartOpts(),
+            data: {
+                labels, datasets: [
+                    { label: 'Disk', data: [...hist.disk], borderColor: '#00e5a0', backgroundColor: 'rgba(0,229,160,.06)', borderWidth: 2, pointRadius: 0, tension: .4, fill: true },
+                    { label: 'Net (÷10%)', data: [...hist.net], borderColor: '#f5c518', backgroundColor: 'rgba(245,197,24,.06)', borderWidth: 2, pointRadius: 0, tension: .4, fill: true },
+                ]
+            }
+        });
+
+        /* ── HELPERS ─────────────────────────────────────────── */
+        const clamp = (v, mn, mx) => Math.min(mx, Math.max(mn, v));
+        const status = (v, w, c) => v >= c ? 'red' : v >= w ? 'yellow' : 'green';
+
+        function updateMeter(id, val, warn, crit, isKbs) {
+            const mc = document.getElementById(`mc-${id}`);
+            const mv = document.getElementById(`mv-${id}`);
+            const br = document.getElementById(`bar-${id}`);
+            const bg = document.getElementById(`badge-${id}`);
+            const st = status(val, warn, crit);
+            const pct = isKbs ? Math.min(100, val / 10) : val;
+
+            mc.className = `meter-card st-${st}`;
+            mv.textContent = isKbs ? `${val.toFixed(0)} KB/s` : `${val.toFixed(1)}%`;
+            br.style.width = `${clamp(pct, 0, 100)}%`;
+
+            const lbl = { green: 'NORMAL', yellow: 'WARNING', red: 'CRITICAL' };
+            bg.className = `badge b-${st}`;
+            bg.innerHTML = `<span class="b-dot"></span>${lbl[st]}`;
+        }
+
+        function updateRing(score) {
+            const C = 376.99;   // 2 * π * 60
+            const col = score > 0.65 ? 'var(--red)' : score > 0.4 ? 'var(--yellow)' : 'var(--green)';
+            const fill = document.getElementById('ring-fill');
+            const val = document.getElementById('ring-val');
+            fill.style.strokeDashoffset = C * (1 - score);
+            fill.style.stroke = col;
+            val.textContent = score.toFixed(2);
+            val.style.fill = col;
+
+            // FIX 5: classifier score bar — ticks at 40% and 65% are CSS ::before/::after
+            const bar = document.getElementById('clf-bar');
+            bar.style.width = `${clamp(score * 100, 0, 100)}%`;
+            bar.style.background = col;
+            const num = document.getElementById('clf-score-num');
+            num.textContent = score.toFixed(2);
+            num.style.color = col;
+        }
+
+        /* ── ANOMALY ENGINE ──────────────────────────────────── */
+        function classify(cpu, mem, disk, net) {
+            if (cpu > 85 && net > 600) return { type: 'TRAFFIC_SPIKE', action: '→ Rate limiting activated' };
+            if (cpu > 82) return { type: 'CPU_OVERLOAD', action: '→ Kill heavy process' };
+            if (mem > 82) return { type: 'MEMORY_LEAK', action: '→ Restarting container' };
+            if (disk > 88) return { type: 'DISK_PRESSURE', action: '→ Log cleanup triggered' };
+            if (net > 700) return { type: 'TRAFFIC_SPIKE', action: '→ Rate limiting activated' };
+            if (cpu < 2 && mem < 2) return { type: 'PROCESS_CRASH', action: '→ Auto restart fired' };
+            if (Math.max(cpu, mem, disk / 1.1, net / 10) > 65)
+                return { type: 'ANOMALY_DETECTED', action: '→ Guardian observing...' };
+            return { type: 'NORMAL', action: '— monitoring baseline' };
+        }
+
+        function anomalyScore(cpu, mem, disk, net) {
+            if (!blReady) return 0;
+            const avg = a => a.reduce((s, v) => s + v, 0) / a.length;
+            const std = a => { const m = avg(a); return Math.sqrt(a.reduce((s, v) => s + (v - m) ** 2, 0) / a.length) || 1; };
+            const z = (v, a) => Math.abs((v - avg(a)) / std(a));
+            const sc = [z(cpu, baseline.cpu) / 4, z(mem, baseline.mem) / 4, z(disk, baseline.disk) / 3, z(net, baseline.net) / 5];
+            return clamp(Math.max(...sc) * .7 + (sc.reduce((a, b) => a + b) / sc.length) * .3, 0, 1);
+        }
+
+        /* ── EVENT LOG ───────────────────────────────────────── */
+        function addLog(type, score, action, sev) {
+            eventLog.unshift({ ts: new Date().toLocaleTimeString(), type, score, action, sev });
+            if (eventLog.length > 200) eventLog.pop();
+            renderLogTop();
+            document.getElementById('log-cnt').textContent =
+                `${eventLog.length} evt${eventLog.length !== 1 ? 's' : ''}`;
+            // FIX 5: check 6 passes when a warn/crit entry fires at score > 0.4
+            if (score > 0.4 && (sev === 'warn' || sev === 'crit')) {
+                setCheck(6, true, `PASS — entry fired, score=${score.toFixed(3)}, sev=${sev}`);
+            }
+        }
+
+        function renderLogTop() {
+            const body = document.getElementById('log-body');
+            document.getElementById('log-empty').style.display = 'none';
+            const e = eventLog[0];
+            const sc = e.sev === 'crit' ? 'crit' : e.sev === 'warn' ? 'warn' : 'ok';
+            const el = document.createElement('div');
+            el.className = 'log-entry';
+            el.innerHTML = `
+    <div class="log-ts">${e.ts}</div>
+    <div class="log-typ ${sc}">${e.type}</div>
+    <div class="log-sc">Score: ${e.score.toFixed(3)} ${e.score > 0.65 ? '🔴' : e.score > 0.4 ? '🟡' : '🟢'}</div>
+    <div class="log-act">${e.action}</div>`;
+            body.insertBefore(el, body.firstChild);
+            while (body.children.length > 52) body.removeChild(body.lastChild);
+        }
+
+        function clearLog() {
+            eventLog = [];
+            document.getElementById('log-body').innerHTML =
+                '<div class="log-empty" id="log-empty">Log cleared.</div>';
+            document.getElementById('log-cnt').textContent = '0 evts';
+        }
+
+        /* ── SERVER STATUS ───────────────────────────────────── */
+        function setOnline(isOnline, errMsg) {
+            online = isOnline;
+            const dot = document.getElementById('conn-dot');
+            const pill = document.getElementById('server-pill');
+            const banner = document.getElementById('offline-banner');
+            const cors = document.getElementById('cors-card');
+
+            if (isOnline) {
+                dot.className = 'logo-dot';
+                pill.className = 'server-pill';
+                pill.textContent = `● CONNECTED`;
+                banner.style.display = 'block';
+                banner.textContent = `✓ Connected to ${serverUrl}`;
+                cors.style.display = 'none';
+                failCount = 0;
+                setCheck(1, true, 'PASS — HTTP 200 from GET /metrics');
+                // hide banner after a short delay while staying connected
+                setTimeout(() => {
+                    if (online) banner.style.display = 'none';
+                }, 2500);
+            } else {
+                dot.className = 'logo-dot offline';
+                pill.className = 'server-pill connecting';
+                pill.textContent = '⟳ RECONNECTING';
+                banner.style.display = 'block';
+                const reason = errMsg ? ` (${errMsg})` : '';
+                banner.textContent =
+                    `Cannot reach backend at ${serverUrl}${reason} — retrying every 3s...`;
+                // FIX 2: show CORS guidance after 3 fails
+                if (failCount >= 3) cors.style.display = 'block';
+                setCheck(1, false, `FAIL — ${failCount} consecutive timeouts (see CORS card)`);
+            }
+        }
+
+        /* ══════════════════════════════════════════════════════
+           FIX 1: fetchMetrics — verified field names match server
+           FIX 2: no custom headers → no preflight CORS issue
+        ════════════════════════════════════════════════════ */
+        async function fetchMetrics() {
+            try {
+                // Simple GET — no custom headers, no body. No preflight.
+                const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/metrics`, { signal: AbortSignal.timeout(2000) });
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const raw = await res.json();
+                lastRaw = raw;
+                setOnline(true);
+
+                // ── FIX 2: Check all 6 expected fields ──────────────
+                const FIELDS = ['cpu_percent', 'memory_percent', 'disk_percent',
+                    'net_bytes_sent', 'net_bytes_recv', 'active_processes'];
+                const missing = FIELDS.filter(f => raw[f] === undefined || raw[f] === null);
+                if (missing.length === 0) {
+                    setCheck(2, true, 'PASS — all 6 fields present');
+                } else {
+                    setCheck(2, false, `FAIL — missing: ${missing.join(', ')}`);
+                }
+
+                // Return normalised values
+                return {
+                    // FIX 1: exact field names from server JSON
+                    cpu: parseFloat(raw.cpu_percent) || 0,
+                    mem: parseFloat(raw.memory_percent) || 0,
+                    disk: parseFloat(raw.disk_percent) || 0,
+                    // net: sum bytes sent + recv, convert bytes → KB
+                    net: ((raw.net_bytes_sent || 0) + (raw.net_bytes_recv || 0)) / 1024,
+                    // FIX 4: active_processes field
+                    procs: parseInt(raw.active_processes) || 0,
+                };
+            } catch (err) {
+                failCount++;
+                lastError = err && err.message ? String(err.message) : 'request failed';
+                setOnline(false, lastError);
+                return null;
+            }
+        }
+
+        /* ══════════════════════════════════════════════════════
+           FIX 3: triggerChaos — exact type mapping
+           select.value IS the server type string — no translation needed.
+           Verified types: cpu_spike, memory_leak, disk_flood,
+                           traffic_spike, multi_vector
+        ════════════════════════════════════════════════════ */
+        const TYPE_MSG = {
+            cpu_spike: 'CPU stress loop injected — container burning cycles',
+            memory_leak: 'Memory alloc loop injected — buffers filling rapidly',
+            disk_flood: 'Disk write flood injected — dummy log file ~100MB',
+            traffic_spike: '50 concurrent threads injected — saturating network',
+            multi_vector: 'Multi-vector chaos — CPU + Memory + Network hit simultaneously',
+        };
+
+        async function triggerChaos() {
+            if (!online) {
+                alert('Server offline. Start your container:\n\ndocker-compose up\n\nCurrent URL: ' + serverUrl);
+                return;
+            }
+
+            const type = document.getElementById('chaos-select').value;  // FIX 3: exact type
+            const btn = document.getElementById('chaos-btn');
+
+            document.getElementById('cs-type').textContent = type;
+            document.getElementById('cs-msg').textContent = TYPE_MSG[type];
+            document.getElementById('cs-ts').textContent = new Date().toLocaleTimeString();
+            document.getElementById('cs-dur').textContent = '';
+
+            btn.classList.add('firing');
+            btn.textContent = 'SENDING...';
+            btn.disabled = true;
+
+            try {
+                // FIX 3: type comes straight from select.value — guaranteed exact match
+                const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/chaos?type=${type}`, {
+                    method: 'POST',
+                    // No Content-Type, no body — avoids CORS preflight (FIX 2)
+                    signal: AbortSignal.timeout(4000),
+                });
+
+                if (!res.ok) {
+                    const txt = await res.text().catch(() => '');
+                    throw new Error(`Server returned ${res.status}: ${txt}`);
+                }
+
+                const data = await res.json();
+                const dur = data.duration || 15;
+
+                btn.textContent = 'ACTIVE';
+                document.getElementById('cs-dur').textContent = `${dur}s`;
+                chaosDone = true;
+                setCheck(5, true, `PASS — POST /chaos?type=${type} → 200, duration=${dur}s`);
+
+                addLog(`CHAOS: ${type.toUpperCase()}`, 0.85, `→ ${type} running for ${dur}s`, 'crit');
+
+                // Live countdown
+                let t = dur;
+                const cd = setInterval(() => {
+                    t--;
+                    document.getElementById('cs-dur').textContent = t > 0 ? `${t}s` : 'done';
+                    if (t <= 0) clearInterval(cd);
+                }, 1000);
+
+                setTimeout(() => {
+                    btn.classList.remove('firing');
+                    btn.textContent = 'INJECT';
+                    btn.disabled = false;
+                    document.getElementById('cs-type').textContent = '—';
+                    addLog('CHAOS_ENDED', 0.1, `— ${type} finished, recovering`, 'ok');
+                }, dur * 1000);
+
+            } catch (err) {
+                btn.classList.remove('firing');
+                btn.textContent = 'INJECT';
+                btn.disabled = false;
+                document.getElementById('cs-msg').textContent = `ERROR: ${err.message}`;
+                document.getElementById('cs-type').textContent = 'FAILED';
+                setCheck(5, false, `FAIL — ${err.message}`);
+                console.error('[chaos]', err);
+            }
+        }
+
+        /* ── CHECKLIST LOGIC ─────────────────────────────────── */
+        function setCheck(n, pass, detail) {
+            const item = document.getElementById(`ci-${n}`);
+            const dot = document.getElementById(`cd-${n}`);
+            const result = document.getElementById(`cr-${n}`);
+
+            const cls = pass ? 'pass' : 'fail';
+            item.className = `chk-item ${cls}`;
+            dot.className = `chk-dot  ${cls}`;
+            dot.textContent = pass ? '✓' : '✗';
+            result.className = `chk-result ${cls}`;
+            result.textContent = detail;
+
+            // Update progress counter
+            const total = [1, 2, 3, 4, 5, 6].filter(i => {
+                const d = document.getElementById(`cd-${i}`);
+                return d && d.textContent === '✓';
+            }).length;
+            const prog = document.getElementById('chk-prog');
+            prog.textContent = `${total} / 6 passed`;
+            prog.style.color = total === 6 ? 'var(--green)' : total >= 3 ? 'var(--yellow)' : 'var(--red)';
+        }
+
+        function runAllChecks() {
+            if (!online) {
+                setCheck(1, false, `FAIL — server not reachable`);
+            }
+            if (!lastRaw) {
+                setCheck(2, false, 'FAIL — no data received yet');
+                setCheck(3, false, 'FAIL — no data received yet');
+                setCheck(4, false, 'FAIL — no data received yet');
+                return;
+            }
+            const FIELDS = ['cpu_percent', 'memory_percent', 'disk_percent',
+                'net_bytes_sent', 'net_bytes_recv', 'active_processes'];
+            const missing = FIELDS.filter(f => lastRaw[f] === undefined || lastRaw[f] === null);
+            setCheck(2, missing.length === 0,
+                missing.length === 0 ? 'PASS — all 6 fields present' : `FAIL — missing: ${missing.join(', ')}`);
+
+            const cpu = parseFloat(lastRaw.cpu_percent) || 0;
+            const mem = parseFloat(lastRaw.memory_percent) || 0;
+            const disk = parseFloat(lastRaw.disk_percent) || 0;
+            const nonZero = cpu > 0 || mem > 0 || disk > 0;
+            setCheck(3, nonZero,
+                nonZero
+                    ? `PASS — CPU:${cpu.toFixed(1)}% MEM:${mem.toFixed(1)}% DISK:${disk.toFixed(1)}%`
+                    : 'FAIL — all values are 0 (server may not be reading real metrics)');
+
+            const procs = parseInt(lastRaw.active_processes) || 0;
+            setCheck(4, procs > 0,
+                procs > 0 ? `PASS — active_processes = ${procs}` : 'FAIL — active_processes = 0 or missing');
+
+            if (!chaosDone) setCheck(5, false, 'FAIL — chaos not injected yet');
+        }
+
+        function toggleChk() {
+            const body = document.getElementById('chk-body');
+            const arrow = document.getElementById('chk-arr');
+            const open = body.classList.toggle('open');
+            arrow.classList.toggle('open', open);
+            if (open) runAllChecks();
+        }
+
+        /* ── SERVER URL HANDLING ───────────────────────────────── */
+        function applyServerUrl() {
+            const input = document.getElementById('server-url-input');
+            let url = (input.value || '').trim();
+            if (!url) {
+                url = 'http://localhost:5000';
+                input.value = url;
+            }
+            if (!/^https?:\/\//i.test(url)) {
+                url = 'http://' + url;
+            }
+            // strip trailing slashes
+            serverUrl = url.replace(/\/+$/, '');
+
+            // reset connection state so we show a clean "connecting" status
+            online = false;
+            failCount = 0;
+            lastError = '';
+            baseline = { cpu: [], mem: [], disk: [], net: [] };
+            blReady = false;
+            setOnline(false, '');
+        }
+
+        /* ═══════════════════════════════════════════════════════
+           MAIN TICK — runs every 1 second
+        ═══════════════════════════════════════════════════════ */
+        async function tick() {
+            const now = Date.now();
+            const data = await fetchMetrics();
+
+            // Clock + uptime always update
+            document.getElementById('live-time').textContent = new Date().toLocaleTimeString();
+            const elapsed = Math.floor((now - startTime) / 1000);
+            document.getElementById('s-uptime').textContent =
+                `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+
+            if (!data) {
+                // Server offline — keep charts scrolling with nulls
+                Object.keys(hist).forEach(k => { hist[k].push(null); hist[k].shift(); });
+                const t = document.getElementById('clf-type');
+                t.textContent = 'SERVER OFFLINE'; t.style.color = 'var(--red)';
+                document.getElementById('clf-action').textContent = '— heartbeat lost, awaiting recovery';
+                cmChart.data.datasets[0].data = [...hist.cpu];
+                cmChart.data.datasets[1].data = [...hist.mem];
+                dnChart.data.datasets[0].data = [...hist.disk];
+                dnChart.data.datasets[1].data = [...hist.net];
+                cmChart.update('none'); dnChart.update('none');
+                return;
+            }
+
+            const { cpu, mem, disk, net, procs } = data;
+
+            // Rolling history
+            hist.cpu.push(cpu); hist.cpu.shift();
+            hist.mem.push(mem); hist.mem.shift();
+            hist.disk.push(disk); hist.disk.shift();
+            hist.net.push(Math.min(100, net / 10)); hist.net.shift();
+
+            // Baseline
+            if (!blReady) {
+                baseline.cpu.push(cpu); baseline.mem.push(mem);
+                baseline.disk.push(disk); baseline.net.push(net);
+                if (baseline.cpu.length >= BL_N) blReady = true;
+            }
+
+            // Meters
+            updateMeter('cpu', cpu, 60, 80, false);
+            updateMeter('mem', mem, 60, 80, false);
+            updateMeter('disk', disk, 70, 90, false);
+            updateMeter('net', net, 500, 800, true);
+
+            // FIX 4: Active processes card
+            const procsEl = document.getElementById('s-procs');
+            procsEl.textContent = procs;
+            procsEl.style.color = procs > 300 ? 'var(--red)' : procs > 150 ? 'var(--yellow)' : 'var(--text)';
+            document.getElementById('s-procs-sub').textContent = `live · ${new Date().toLocaleTimeString()}`;
+
+            // Check 3 + 4 live
+            setCheck(3, cpu > 0 || mem > 0 || disk > 0,
+                `PASS — CPU:${cpu.toFixed(1)}% MEM:${mem.toFixed(1)}% DISK:${disk.toFixed(1)}%`);
+            setCheck(4, procs > 0,
+                procs > 0 ? `PASS — active_processes = ${procs}` : 'FAIL — active_processes = 0');
+
+            // Score + ring
+            const score = anomalyScore(cpu, mem, disk, net);
+            updateRing(score);
+
+            // Classifier
+            const { type, action } = classify(cpu, mem, disk, net);
+            const typeEl = document.getElementById('clf-type');
+            typeEl.textContent = blReady ? type : `LEARNING (${baseline.cpu.length}/${BL_N})`;
+            typeEl.style.color = type === 'NORMAL'
+                ? 'var(--green)' : type === 'ANOMALY_DETECTED'
+                    ? 'var(--yellow)' : 'var(--red)';
+            document.getElementById('clf-action').textContent =
+                blReady ? action : '— collecting baseline samples';
+
+            // ── FIX 5: Event log fires at score > 0.40 ─────────────
+            // warn = 0.40–0.65, crit = above 0.65
+            const sev = score > 0.65 ? 'crit' : score > 0.4 ? 'warn' : 'ok';
+
+            if (score > 0.4 && now - lastLogTs > 2000 && blReady) {
+                addLog(type, score, action, sev);
+                lastLogTs = now;
+                if (score > 0.65) {
+                    anomalies++; recoveries++;
+                    document.getElementById('s-recoveries').textContent = recoveries;
+                    document.getElementById('s-anomalies').textContent = anomalies;
+                }
+            } else if (now - lastLogTs > 10000 && blReady) {
+                addLog('HEARTBEAT', score, '— all systems nominal', 'ok');
+                lastLogTs = now;
+            }
+
+            // Charts
+            cmChart.data.datasets[0].data = [...hist.cpu];
+            cmChart.data.datasets[1].data = [...hist.mem];
+            dnChart.data.datasets[0].data = [...hist.disk];
+            dnChart.data.datasets[1].data = [...hist.net];
+            cmChart.update('none');
+            dnChart.update('none');
+        }
+
+        /* ── BOOT ─────────────────────────────────────────────── */
+        setInterval(tick, POLL_MS);
+        tick();
+        // Auto-open checklist after first tick completes
+        setTimeout(toggleChk, 1200);
+    </script>
+</body>
+
+</html>

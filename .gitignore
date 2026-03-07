@@ -1,0 +1,42 @@
+﻿# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+venv/
+env/
+.venv/
+
+# Environment variables (NEVER commit secrets)
+.env
+.env.local
+.env.production
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Docker
+*.log
+
+# Guardian logs (regenerated at runtime)
+guardian/guardian.log
+
+# Test artifacts
+*.coverage
+htmlcov/
+.pytest_cache/
+
+# Byte-compiled
+*.pyc

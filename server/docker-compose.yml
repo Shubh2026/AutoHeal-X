@@ -1,0 +1,97 @@
+version: "3.9"
+
+# ════════════════════════════════════════════════════════════════════════════
+# AutoHealX AI — Multi-Container Cluster
+# ════════════════════════════════════════════════════════════════════════════
+# Four services that mimic a real production stack:
+#   web      — public-facing Flask app          → localhost:5000
+#   api      — internal API service             → localhost:5010
+#   database — simulated database workload      → localhost:5020
+#   cache    — simulated cache / worker         → localhost:5030
+#
+# Each service runs the SAME server.py image but on a different port,
+# simulating different components of a real infrastructure.
+# The guardian monitors all four independently.
+# ════════════════════════════════════════════════════════════════════════════
+
+services:
+
+  # ── Web Service (primary — public facing) ──────────────────────────────────
+  web:
+    build: .
+    container_name: autohealx-web
+    ports:
+      - "5000:5000"
+    environment:
+      - SERVICE_NAME=web
+      - SERVICE_ROLE=Public Web Server
+      - PORT=5000
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - autohealx-net
+
+  # ── API Service (internal) ─────────────────────────────────────────────────
+  api:
+    build: .
+    container_name: autohealx-api
+    ports:
+      - "5010:5000"
+    environment:
+      - SERVICE_NAME=api
+      - SERVICE_ROLE=Internal API Service
+      - PORT=5000
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - autohealx-net
+
+  # ── Database Service ───────────────────────────────────────────────────────
+  database:
+    build: .
+    container_name: autohealx-database
+    ports:
+      - "5020:5000"
+    environment:
+      - SERVICE_NAME=database
+      - SERVICE_ROLE=Database Layer
+      - PORT=5000
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - autohealx-net
+
+  # ── Cache / Worker Service ─────────────────────────────────────────────────
+  cache:
+    build: .
+    container_name: autohealx-cache
+    ports:
+      - "5030:5000"
+    environment:
+      - SERVICE_NAME=cache
+      - SERVICE_ROLE=Cache and Worker
+      - PORT=5000
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:5000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - autohealx-net
+
+networks:
+  autohealx-net:
+    driver: bridge

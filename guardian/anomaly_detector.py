@@ -27,8 +27,8 @@ MEM_WARN  = 60.0    # %
 MEM_CRIT  = 80.0    # %
 DISK_WARN = 70.0    # %
 DISK_CRIT = 90.0    # %
-NET_WARN  = 500.0   # KB/s
-NET_CRIT  = 800.0   # KB/s
+NET_WARN  = 50_000    # bytes/sec  (~50 KB/s — well above idle ~1 KB/s)
+NET_CRIT  = 100_000   # bytes/sec  (~100 KB/s — catches real traffic spikes)
 
 ANOMALY_SCORE_THRESHOLD = 0.65   # above this → recovery fires
 TREND_WINDOW            = 10     # samples to look back for trend
@@ -115,12 +115,17 @@ class BaselineLearner:
         self.score_mu      = float(np.mean(train_raw))
         self.score_sig     = float(np.std(train_raw)) or 1e-6
 
-        # ── Per-metric baseline stats (for z-score component) ─────────────
-        self.metric_stats  = {
-            "cpu":  (float(np.mean(X[:, 0])), float(np.std(X[:, 0])) or 1e-6),
-            "mem":  (float(np.mean(X[:, 1])), float(np.std(X[:, 1])) or 1e-6),
-            "disk": (float(np.mean(X[:, 2])), float(np.std(X[:, 2])) or 1e-6),
-            "net":  (float(np.mean(X[:, 3])), float(np.std(X[:, 3])) or 1e-6),
+        # Minimum std thresholds prevent z-scores from exploding on
+        # low-variance baselines (e.g. idle containers with CPU=0.0±0.1%)
+        MIN_STD = {"cpu": 5.0, "mem": 3.0, "disk": 2.0, "net": 2.0}
+
+        # Use a floor (and a tiny epsilon) when computing per-metric stddev so
+        # downstream z-score calculations cannot divide by near-zero values.
+        self.metric_stats = {
+            "cpu":  (float(np.mean(X[:, 0])), max(float(np.std(X[:, 0])) or 1e-6, MIN_STD["cpu"])),
+            "mem":  (float(np.mean(X[:, 1])), max(float(np.std(X[:, 1])) or 1e-6, MIN_STD["mem"])),
+            "disk": (float(np.mean(X[:, 2])), max(float(np.std(X[:, 2])) or 1e-6, MIN_STD["disk"])),
+            "net":  (float(np.mean(X[:, 3])), max(float(np.std(X[:, 3])) or 1e-6, MIN_STD["net"])),
         }
 
         print(
@@ -188,7 +193,7 @@ def calc_anomaly_score(cpu: float, mem: float, disk: float, net: float) -> float
     # Sigmoid normalisation calibrated to THIS model's training distribution.
     # z measures how far this sample is from the training mean in std-dev units.
     z_if    = (learner.score_mu - raw) / learner.score_sig
-    if_score = float(np.clip(1.0 / (1.0 + np.exp(-(z_if - 1.5))), 0.0, 1.0))
+    if_score = float(np.clip(1.0 / (1.0 + np.exp(-(z_if - 2.5))), 0.0, 1.0))
 
     # ── Per-metric z-score (COMPLEMENTARY — 40%) ─────────────────────────────
     z_combined = _z_score_from_baseline(cpu, mem, disk, net)

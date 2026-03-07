@@ -1,33 +1,17 @@
 """
 telegram_bot.py
-════════════════════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════════════════
 AutoHealX AI — Telegram Command Bot
 
-A developer can interact with the live system from their phone:
-
+Commands:
   /status              → live metrics + anomaly score for all services
   /status web          → metrics for a specific service
   /history             → last 10 events from the decision log
-  /predict             → current trend analysis — which metrics are rising?
+  /predict             → current trend analysis
   /recover <service>   → manually trigger recovery for a service
-  /threshold <value>   → change the anomaly threshold (e.g. /threshold 0.70)
+  /threshold <value>   → change the anomaly threshold
   /help                → list all commands
-
-Setup:
-  1. Message @BotFather on Telegram → /newbot
-  2. Copy the bot token into TELEGRAM_BOT_TOKEN in notifier.py (or env var)
-  3. Start a chat with your bot
-  4. Visit https://api.telegram.org/bot<TOKEN>/getUpdates
-  5. Copy your chat_id from the "from" object
-  6. Set TELEGRAM_CHAT_ID in notifier.py (or env var)
-  7. python telegram_bot.py runs standalone, OR guardian.py starts it as a thread
-
-Architecture:
-  • Polls Telegram's getUpdates endpoint every 2 seconds (long-polling)
-  • Reads live state from guardian.py's shared _live_state dict (imported)
-  • Sends replies via sendMessage API
-  • Runs as a daemon thread — dies when guardian.py exits
-════════════════════════════════════════════════════════════════════════════════
+═══════════════════════════════════════════════════════════════════════════════
 """
 
 import logging
@@ -36,34 +20,34 @@ import threading
 import time
 from datetime import datetime
 
-import requests
+import requests as http_requests
 
 logger = logging.getLogger("guardian.telegram_bot")
 
-# ── Config ──────────────────────────────
-# Tokens and chat IDs are read from environment for security:
-#   TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+# ── Config ──────────────────────────────────────────
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
-POLL_INTERVAL_S    = 2      # seconds between getUpdates calls
+POLL_INTERVAL_S    = 2
 REQUEST_TIMEOUT_S  = 10
 
+# ── Guardian API URL (reads live state reliably) ────
+GUARDIAN_STATE_URL  = "http://localhost:5001/state"
+GUARDIAN_REST_URL   = "http://localhost:5002"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # Telegram API helpers
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _api_url(method: str) -> str:
     return f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/{method}"
 
 
 def send_message(chat_id: str, text: str, parse_mode: str = "Markdown") -> bool:
-    """Send a message to a chat. Returns True on success."""
     if not TELEGRAM_BOT_TOKEN:
         return False
     try:
-        resp = requests.post(
+        resp = http_requests.post(
             _api_url("sendMessage"),
             json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
             timeout=REQUEST_TIMEOUT_S,
@@ -75,11 +59,10 @@ def send_message(chat_id: str, text: str, parse_mode: str = "Markdown") -> bool:
 
 
 def get_updates(offset: int) -> list:
-    """Long-poll Telegram for new messages. Returns list of update objects."""
     if not TELEGRAM_BOT_TOKEN:
         return []
     try:
-        resp = requests.get(
+        resp = http_requests.get(
             _api_url("getUpdates"),
             params={"offset": offset, "timeout": 5},
             timeout=REQUEST_TIMEOUT_S,
@@ -90,48 +73,39 @@ def get_updates(offset: int) -> list:
         return []
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# State accessor — reads from guardian.py's shared live state
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# State accessor — reads from Guardian's HTTP API (port 5001)
+# This avoids the __main__ vs module import problem entirely.
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def _get_state() -> dict:
     """
-    Import guardian's live state at runtime (avoids circular import at module load).
-    Falls back to empty dict if guardian isn't running.
+    Fetch live state from Guardian's HTTP API at localhost:5001/state.
+    This is the same endpoint the Guardian UI polls.
     """
     try:
-        import guardian
-        return guardian.get_state_snapshot()
-    except Exception:
+        resp = http_requests.get(GUARDIAN_STATE_URL, timeout=3)
+        if resp.status_code == 200:
+            return resp.json()
         return {}
-
-
-def _get_multi_state() -> dict:
-    """
-    Get state for all services from the multi-service guardian.
-    Returns dict keyed by service name.
-    """
-    try:
-        import guardian
-        return guardian.get_all_services_snapshot()
-    except Exception:
+    except Exception as exc:
+        logger.debug("[TG BOT] Cannot reach guardian state API: %s", exc)
         return {}
 
 
 def _get_history() -> list:
-    """Get event history from guardian's live state."""
     state = _get_state()
     return state.get("events", [])
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # Command handlers
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def cmd_help(chat_id: str, _args: list) -> None:
     text = (
         "🤖 *AutoHealX AI — Command Reference*\n"
-        "━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         "📊 *Monitoring*\n"
         "`/status`          — all services live metrics\n"
         "`/status <name>`   — single service (web/api/database/cache)\n"
@@ -157,10 +131,12 @@ def cmd_status(chat_id: str, args: list) -> None:
             "⚠️ *Guardian offline*\nRun `python guardian.py` to start the system.")
         return
 
+    # Check for multi-service data
+    services = state.get("services", {})
+
     # Single service requested
     if args:
         service_name = args[0].lower()
-        services = state.get("services", {})
         if service_name not in services:
             available = ", ".join(services.keys()) or "none"
             send_message(chat_id,
@@ -170,39 +146,53 @@ def cmd_status(chat_id: str, args: list) -> None:
         _send_service_status(chat_id, service_name, svc)
         return
 
-    # All services
-    services = state.get("services", {})
-    if not services:
-        # Single-service fallback
+    # All services overview
+    if services:
+        _send_multi_status(chat_id, state, services)
+    else:
         _send_single_status(chat_id, state)
-        return
+
+
+def _send_multi_status(chat_id: str, state: dict, services: dict) -> None:
+    """Send status for all services in multi-service mode."""
+    tick = state.get("tick", "?")
+    ts   = state.get("timestamp", "?")
 
     lines = [
-        f"📊 *AutoHealX AI — All Services*",
-        f"🕐 `{datetime.now().strftime('%H:%M:%S')}`  |  "
-        f"Tick `{state.get('tick', '?')}`",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📊 *AutoHealX AI — Cluster Status*",
+        f"🕐 `{ts}` | Tick `{tick}`",
+        "━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
+
     for name, svc in services.items():
-        score  = svc.get("score", 0)
-        sev    = svc.get("severity", "?")
-        online = svc.get("online", False)
-        m      = svc.get("metrics", {})
+        score   = svc.get("score", 0)
+        sev     = svc.get("severity", "?")
+        online  = svc.get("online", False)
+        m       = svc.get("metrics", {})
+        action  = svc.get("action")
+        bl      = svc.get("baseline_ready", False)
 
         sev_icon = "🔴" if sev == "CRITICAL" else "🟡" if sev == "WARNING" else "🟢"
-        status   = "🟢 ONLINE" if online else "🔴 OFFLINE"
+        status   = "🟢" if online else "🔴 OFFLINE"
+
+        bl_str = "✅" if bl else f"⏳ Learning"
 
         lines.append(
-            f"\n*{name.upper()}* {sev_icon} {status}\n"
-            f"Score: `{score:.3f}` | CPU: `{m.get('cpu',0):.1f}%` | "
-            f"MEM: `{m.get('mem',0):.1f}%`\n"
-            f"DISK: `{m.get('disk',0):.1f}%` | NET: `{m.get('net',0):.0f} KB/s`"
+            f"\n{status} *{name.upper()}* {sev_icon}\n"
+            f"Score: `{score:.3f}` | {bl_str}\n"
+            f"CPU: `{m.get('cpu',0):.1f}%` | "
+            f"MEM: `{m.get('mem',0):.1f}%` | "
+            f"DISK: `{m.get('disk',0):.1f}%`\n"
+            f"NET: `{m.get('net',0):.0f} KB/s` | "
+            f"PROCS: `{m.get('procs',0)}`"
         )
+        if action:
+            lines.append(f"⚡ Action: `{action[:60]}`")
 
-    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("\n━━━━━━━━━━━━━━━━━━━━━━━━")
     lines.append(
-        f"Recoveries: `{state.get('recoveries_total',0)}` | "
-        f"Anomalies: `{state.get('anomalies_total',0)}`"
+        f"🔧 Recoveries: `{state.get('recoveries_total',0)}` | "
+        f"⚠️ Anomalies: `{state.get('anomalies_total',0)}`"
     )
     send_message(chat_id, "\n".join(lines))
 
@@ -214,31 +204,34 @@ def _send_service_status(chat_id: str, name: str, svc: dict) -> None:
     m       = svc.get("metrics", {})
     action  = svc.get("action") or "None"
     online  = svc.get("online", False)
+    bl      = svc.get("baseline_ready", False)
 
     sev_icon = "🔴" if sev == "CRITICAL" else "🟡" if sev == "WARNING" else "🟢"
     status   = "🟢 ONLINE" if online else "🔴 OFFLINE"
+    bl_str   = "✅ Ready" if bl else "⏳ Learning"
 
     text = (
         f"📊 *{name.upper()}* — Live Status\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Status: {status}\n"
         f"Severity: {sev_icon} `{sev}`\n"
         f"Score: `{score:.3f}` / 1.000\n"
         f"Classification: `{clf}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Baseline: {bl_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"CPU:  `{m.get('cpu',0):.1f}%`\n"
         f"MEM:  `{m.get('mem',0):.1f}%`\n"
         f"DISK: `{m.get('disk',0):.1f}%`\n"
         f"NET:  `{m.get('net',0):.0f} KB/s`\n"
         f"PROCS: `{m.get('procs',0)}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Last action: `{action}`"
     )
     send_message(chat_id, text)
 
 
 def _send_single_status(chat_id: str, state: dict) -> None:
-    """Fallback for single-service guardian."""
+    """Fallback for single-service mode."""
     score  = state.get("score", 0)
     sev    = state.get("severity", "UNKNOWN")
     clf    = state.get("classification", "—")
@@ -253,12 +246,12 @@ def _send_single_status(chat_id: str, state: dict) -> None:
     text = (
         f"📊 *AutoHealX AI — Status*\n"
         f"🕐 `{ts}` | Tick `{tick}`\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"Severity: {sev_icon} `{sev}`\n"
         f"Score: `{score:.3f}` / 1.000\n"
         f"Class: `{clf}`\n"
         f"Baseline: {bl_str}\n"
-        f"━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"CPU:  `{m.get('cpu',0):.1f}%`\n"
         f"MEM:  `{m.get('mem',0):.1f}%`\n"
         f"DISK: `{m.get('disk',0):.1f}%`\n"
@@ -269,7 +262,6 @@ def _send_single_status(chat_id: str, state: dict) -> None:
 
 
 def cmd_history(chat_id: str, args: list) -> None:
-    """Show last N events from the decision log."""
     try:
         n = min(int(args[0]), 20) if args else 10
     except (ValueError, IndexError):
@@ -293,41 +285,50 @@ def cmd_history(chat_id: str, args: list) -> None:
 
 
 def cmd_predict(chat_id: str, _args: list) -> None:
-    """Show trend predictions for all metrics."""
-    try:
-        import anomaly_detector as ad
+    """Show trend predictions from live state."""
+    state = _get_state()
 
-        state     = _get_state()
-        services  = state.get("services", {state.get("classification","?"): state})
-        lines     = ["🔮 *AutoHealX AI — Trend Predictions*\n"]
+    if not state:
+        send_message(chat_id, "⚠️ Guardian offline — cannot predict.")
+        return
 
-        for svc_name in (services if isinstance(services, dict) and services else ["main"]):
-            cpu_hist  = ad.learner.get_history("cpu")
-            mem_hist  = ad.learner.get_history("mem")
-            disk_hist = ad.learner.get_history("disk")
-            net_hist  = ad.learner.get_history("net")
+    services = state.get("services", {})
+    lines = ["🔮 *AutoHealX AI — Trend Predictions*\n"]
 
-            predictions = ad.predict_breach(cpu_hist, mem_hist, disk_hist, net_hist)
+    has_predictions = False
 
-            if not predictions:
-                lines.append(f"✅ *{svc_name}*: All metrics stable — no breach predicted")
+    for svc_name, svc_data in services.items():
+        preds = svc_data.get("predictions", [])
+        if preds:
+            has_predictions = True
+            lines.append(f"⚠️ *{svc_name.upper()}* — Predicted breaches:")
+            for pred in preds:
+                lines.append(
+                    f"  `{pred['metric'].upper()}` — current `{pred['current']:.1f}` → "
+                    f"threshold `{pred['threshold']:.1f}` in ~`{pred['eta_s']}s`"
+                )
+        else:
+            bl = svc_data.get("baseline_ready", False)
+            if bl:
+                lines.append(f"✅ *{svc_name.upper()}*: All metrics stable")
             else:
-                lines.append(f"⚠️ *{svc_name}* — Predicted breaches:")
-                for pred in predictions:
-                    lines.append(
-                        f"  `{pred['metric'].upper()}` — current `{pred['current']:.1f}` → "
-                        f"threshold `{pred['threshold']:.1f}` in ~`{pred['eta_s']}s`"
-                    )
-            lines.append("")
+                lines.append(f"⏳ *{svc_name.upper()}*: Learning baseline...")
+        lines.append("")
 
-        send_message(chat_id, "\n".join(lines))
+    if not services:
+        preds = state.get("predictions", [])
+        if preds:
+            for pred in preds:
+                lines.append(
+                    f"⚠️ `{pred['metric'].upper()}` — breach in ~`{pred['eta_s']}s`"
+                )
+        else:
+            lines.append("✅ All metrics stable — no breach predicted")
 
-    except Exception as exc:
-        send_message(chat_id, f"⚠️ Prediction error: `{exc}`")
+    send_message(chat_id, "\n".join(lines))
 
 
 def cmd_recover(chat_id: str, args: list) -> None:
-    """Manually trigger recovery for a named service."""
     if not args:
         send_message(chat_id,
             "Usage: `/recover <service>`\n"
@@ -368,7 +369,6 @@ def cmd_recover(chat_id: str, args: list) -> None:
 
 
 def cmd_threshold(chat_id: str, args: list) -> None:
-    """Change the anomaly score threshold live."""
     if not args:
         send_message(chat_id,
             "Usage: `/threshold <value>`\nExample: `/threshold 0.70`")
@@ -393,9 +393,71 @@ def cmd_threshold(chat_id: str, args: list) -> None:
         send_message(chat_id, f"❌ Failed to update threshold: `{exc}`")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
+# Proactive Alert Sender (called by guardian.py when anomaly detected)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def send_alert(service: str, classification: str, score: float,
+               metrics: dict, action: str = None) -> bool:
+    """
+    Send a proactive anomaly alert to Telegram.
+    Called by guardian.py main loop or notifier.py.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    m = metrics or {}
+    action_line = f"⚡ Action: `{action}`" if action else "🔍 Monitoring..."
+
+    text = (
+        f"🚨 *ANOMALY ALERT — {service.upper()}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Classification: `{classification}`\n"
+        f"Score: `{score:.3f}` / 1.000\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"CPU:  `{m.get('cpu',0):.1f}%`\n"
+        f"MEM:  `{m.get('mem',0):.1f}%`\n"
+        f"DISK: `{m.get('disk',0):.1f}%`\n"
+        f"NET:  `{m.get('net',0):.0f} KB/s`\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"{action_line}"
+    )
+    return send_message(TELEGRAM_CHAT_ID, text)
+
+
+def send_recovery_alert(service: str, classification: str, action: str) -> bool:
+    """Send a recovery completed alert."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    text = (
+        f"✅ *RECOVERY EXECUTED — {service.upper()}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Classification: `{classification}`\n"
+        f"Action: `{action}`\n"
+        f"Time: `{datetime.now().strftime('%H:%M:%S')}`"
+    )
+    return send_message(TELEGRAM_CHAT_ID, text)
+
+
+def send_prediction_alert(service: str, metric: str, eta_s: int, current: float) -> bool:
+    """Send a predictive breach alert."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    text = (
+        f"🔮 *PREDICTED BREACH — {service.upper()}*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"Metric: `{metric.upper()}`\n"
+        f"Current: `{current:.1f}`\n"
+        f"Breach in: ~`{eta_s}s`"
+    )
+    return send_message(TELEGRAM_CHAT_ID, text)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
 # Command dispatcher
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 COMMANDS = {
     "/help":      cmd_help,
@@ -408,13 +470,11 @@ COMMANDS = {
 
 
 def handle_message(chat_id: str, text: str) -> None:
-    """Parse and dispatch a Telegram message to the correct handler."""
     text = text.strip()
     parts = text.split()
     if not parts:
         return
 
-    # Extract command (handle /command@botname format)
     cmd_raw = parts[0].split("@")[0].lower()
     args    = parts[1:]
 
@@ -432,17 +492,11 @@ def handle_message(chat_id: str, text: str) -> None:
             f"Type `/help` to see all commands.")
 
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 # Polling loop
-# ══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def run_bot_loop() -> None:
-    """
-    Main Telegram polling loop.
-    Runs forever in a daemon thread.
-    Only responds to messages from the configured TELEGRAM_CHAT_ID
-    (prevents unauthorized control of the system).
-    """
     if not TELEGRAM_BOT_TOKEN:
         logger.warning("[TG BOT] No token configured — bot disabled")
         return
@@ -462,7 +516,6 @@ def run_bot_loop() -> None:
             chat_id = str(msg.get("chat", {}).get("id", ""))
             text    = msg.get("text", "")
 
-            # Security: only accept messages from the configured chat
             if chat_id and chat_id == str(TELEGRAM_CHAT_ID) and text:
                 handle_message(chat_id, text)
             elif chat_id and text:

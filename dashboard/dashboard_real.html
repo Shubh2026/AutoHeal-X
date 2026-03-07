@@ -1513,7 +1513,7 @@
                     <circle class="ring-fill" id="ring-fill" cx="75" cy="75" r="60" stroke-dasharray="376.99"
                         stroke-dashoffset="376.99" stroke="var(--green)" />
                     <text class="ring-val" id="ring-val" x="75" y="71" fill="var(--green)">0.00</text>
-                    <text class="ring-sub" x="75" y="89">/ 1.00</text>
+                    <text class="ring-sub" x="75" y="100">/ 1.00</text>
                 </svg>
                 <div class="ring-thr-row">
                     <span class="ring-thr warn">WARN &gt; 0.40</span>
@@ -1873,7 +1873,13 @@
         async function fetchMetrics() {
             try {
                 // Simple GET — no custom headers, no body. No preflight.
-                const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/metrics`, { signal: AbortSignal.timeout(2000) });
+                // Use AbortController for broader browser compatibility and
+                // increase timeout slightly to avoid spurious failures on slow hosts.
+                const controller = new AbortController();
+                const timeoutMs = 4000;
+                const to = setTimeout(() => controller.abort(), timeoutMs);
+                const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/metrics`, { signal: controller.signal });
+                clearTimeout(to);
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const raw = await res.json();
                 lastRaw = raw;
@@ -1902,7 +1908,12 @@
                 };
             } catch (err) {
                 failCount++;
-                lastError = err && err.message ? String(err.message) : 'request failed';
+                // Distinguish abort vs other network errors for clearer messages
+                if (err && err.name === 'AbortError') {
+                    lastError = `timeout after ${timeoutMs}ms`;
+                } else {
+                    lastError = err && err.message ? String(err.message) : 'request failed';
+                }
                 setOnline(false, lastError);
                 return null;
             }
@@ -1942,11 +1953,15 @@
 
             try {
                 // FIX 3: type comes straight from select.value — guaranteed exact match
+                // Use AbortController for the POST timeout too
+                const cctrl = new AbortController();
+                const cto = setTimeout(() => cctrl.abort(), 6000);
                 const res = await fetch(`${serverUrl.replace(/\/+$/, '')}/chaos?type=${type}`, {
                     method: 'POST',
                     // No Content-Type, no body — avoids CORS preflight (FIX 2)
-                    signal: AbortSignal.timeout(4000),
+                    signal: cctrl.signal,
                 });
+                clearTimeout(cto);
 
                 if (!res.ok) {
                     const txt = await res.text().catch(() => '');

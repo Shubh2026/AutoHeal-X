@@ -633,20 +633,9 @@ def run_guardian(server_url: str, poll_interval: int, use_color: bool) -> None:
 def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
     """
     Multi-service main loop. Monitors all services defined in SERVICES dict.
-
-    Each tick:
-      1. Poll /metrics for every service
-      2. Score and classify each independently
-      3. Fire recovery per-service if needed
-      4. Write per-service state into _live_state["services"]
-      5. Print a compact cluster overview to terminal
-
-    Uses a per-service IsolationForest learner so each service builds
-    its own baseline independently.
     """
     from anomaly_detector import BaselineLearner, calc_anomaly_score, classify_anomaly
     from anomaly_detector import predict_breach, BASELINE_SIZE
-    import importlib
     import anomaly_detector as ad_module
 
     logger = logging.getLogger("guardian.multi")
@@ -685,8 +674,10 @@ def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
                     "score":          0.0,
                     "classification": "SERVER_OFFLINE",
                     "action":         None,
-                    "metrics":        {},
+                    "metrics":        {"cpu": 0, "mem": 0, "disk": 0, "net": 0, "procs": 0},
                     "baseline_ready": learner.baseline_ready,
+                    "baseline_samples": len(learner.samples),
+                    "predictions":    [],
                 }
                 continue
 
@@ -713,16 +704,18 @@ def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
 
             ad_module.learner = original_learner   # restore
 
-            # Recovery
+            # Recovery — only fire if classification is NOT NORMAL
             action_taken = None
-            if baseline_ready and score > SCORE_THRESHOLD:
+            if baseline_ready and score > SCORE_THRESHOLD and classification != "NORMAL":
                 original_container = recovery_engine.CONTAINER_NAME
                 recovery_engine.CONTAINER_NAME = container_name
                 try:
                     action_taken = recovery_engine.select_and_execute(
                         classification, score
                     )
-                    _recoveries_total += 1
+                    # Only count as recovery if actual action taken
+                    if action_taken and "NO_ACTION" not in action_taken:
+                        _recoveries_total += 1
                 except Exception as exc:
                     action_taken = f"RECOVERY_ERROR: {exc}"
                 finally:
@@ -731,12 +724,15 @@ def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
                 _anomalies_total += 1
 
                 # Notify
+                run_guardian._current_service = svc_name
                 if _NOTIFIER_AVAILABLE:
                     notifier.notify_anomaly(
                         svc_name, classification, score,
                         {"cpu": cpu, "mem": mem, "disk": disk, "net": net},
                         action_taken
                     )
+                    if action_taken and "NO_ACTION" not in action_taken:
+                        notifier.notify_recovery(svc_name, classification, action_taken)
 
             # Terminal line
             sev    = _severity_label(score)
@@ -758,17 +754,17 @@ def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
                 )
 
             # Push to event log
-            if action_taken:
+            if action_taken and "NO_ACTION" not in action_taken:
                 push_event(f"{svc_name}:{classification}", score, action_taken, "critical")
             elif score > 0.4 and baseline_ready:
                 push_event(f"{svc_name}:{classification}", score, "— monitoring", "warning")
 
             services_state[svc_name] = {
-                "online":         True,
-                "severity":       sev if baseline_ready else "LEARNING",
-                "score":          round(score, 3),
-                "classification": classification if baseline_ready else "LEARNING",
-                "action":         action_taken,
+                "online":           True,
+                "severity":         sev if baseline_ready else "LEARNING",
+                "score":            round(score, 3),
+                "classification":   classification if baseline_ready else "LEARNING",
+                "action":           action_taken if (action_taken and "NO_ACTION" not in action_taken) else None,
                 "metrics": {
                     "cpu":   round(cpu,  1),
                     "mem":   round(mem,  1),
@@ -776,29 +772,68 @@ def run_guardian_multi(poll_interval: int, use_color: bool) -> None:
                     "net":   round(net,  1),
                     "procs": metrics.get("procs", 0),
                 },
-                "baseline_ready": baseline_ready,
-                "predictions":    preds,
+                "baseline_ready":   baseline_ready,
+                "baseline_samples": len(learner.samples) if not baseline_ready else BASELINE_SIZE,
+                "predictions":      preds,
             }
 
-        # Aggregate worst score across all services for the main state
-        online_svcs  = [s for s in services_state.values() if s["online"]]
-        worst_score  = max((s["score"] for s in online_svcs), default=0.0)
-        worst_sev    = _severity_label(worst_score)
-        hb           = heartbeat_monitor.get_status()
+        # ── Aggregate state for top-level (used by Telegram bot + UI) ──────
+        online_svcs = [s for s in services_state.values() if s["online"]]
+
+        # Worst score across all services
+        worst_score = max((s["score"] for s in online_svcs), default=0.0)
+        worst_sev   = _severity_label(worst_score)
+
+        # Aggregate baseline: ready only when ALL services are ready
+        all_baselines_ready = (
+            all(s.get("baseline_ready", False) for s in online_svcs)
+            if online_svcs else False
+        )
+
+        # Min baseline samples across services (for progress display)
+        min_baseline_samples = min(
+            (s.get("baseline_samples", 0) for s in online_svcs),
+            default=0
+        )
+
+        # Pick the worst service's metrics for top-level display
+        worst_svc = max(online_svcs, key=lambda s: s["score"]) if online_svcs else None
+        worst_metrics = worst_svc["metrics"] if worst_svc else {
+            "cpu": 0, "mem": 0, "disk": 0, "net": 0, "procs": 0
+        }
+
+        # Pick latest real action (not NO_ACTION) from any service
+        latest_action = None
+        for svc_data in services_state.values():
+            a = svc_data.get("action")
+            if a and "NO_ACTION" not in a:
+                latest_action = a
+                break
+
+        hb = heartbeat_monitor.get_status()
 
         update_state(
-            tick             = tick,
-            timestamp        = ts,
-            score            = worst_score,
-            severity         = worst_sev,
-            classification   = "MULTI_SERVICE",
-            server_online    = bool(online_svcs),
-            recoveries_total = _recoveries_total,
-            anomalies_total  = _anomalies_total,
-            heartbeat_up     = hb.get("up", True),
-            heartbeat_fails  = hb.get("consecutive_fails", 0),
-            services         = services_state,
+            tick              = tick,
+            timestamp         = ts,
+            baseline_ready    = all_baselines_ready,
+            baseline_samples  = min_baseline_samples,
+            baseline_total    = BASELINE_SIZE,
+            score             = worst_score,
+            severity          = worst_sev if all_baselines_ready else "LEARNING",
+            classification    = "MULTI_SERVICE",
+            action            = latest_action,
+            metrics           = worst_metrics,
+            server_online     = bool(online_svcs),
+            recoveries_total  = _recoveries_total,
+            anomalies_total   = _anomalies_total,
+            heartbeat_up      = hb.get("up", True),
+            heartbeat_fails   = hb.get("consecutive_fails", 0),
+            services          = services_state,
         )
+
+        # Periodic heartbeat event
+        if tick % 10 == 0 and all_baselines_ready:
+            push_event("HEARTBEAT", worst_score, "— all systems nominal", "normal")
 
         time.sleep(poll_interval)
 

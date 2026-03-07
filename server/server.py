@@ -12,6 +12,66 @@ CORS(app)
 START_TIME = time.time()
 CHAOS_DURATION = 15
 
+# -----------------------------
+# Network Rate Tracking
+# -----------------------------
+class NetworkRateTracker:
+    """Track network I/O and compute bytes-per-second rate."""
+    
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._last_counters = None
+        self._last_time = None
+        self._last_sent_rate = 0.0
+        self._last_recv_rate = 0.0
+    
+    def get_rates(self):
+        """
+        Returns (bytes_sent_per_sec, bytes_recv_per_sec).
+        First call returns (0, 0) since we need two samples.
+        """
+        with self._lock:
+            current = psutil.net_io_counters()
+            now = time.time()
+            
+            if self._last_counters is None:
+                # First call — no previous sample
+                self._last_counters = current
+                self._last_time = now
+                return (0, 0)
+            
+            # Calculate time delta (avoid division by zero)
+            delta_t = now - self._last_time
+            if delta_t < 0.01:
+                # Too soon, return cached rates
+                return (self._last_sent_rate, self._last_recv_rate)
+            
+            # Calculate byte deltas
+            sent_delta = current.bytes_sent - self._last_counters.bytes_sent
+            recv_delta = current.bytes_recv - self._last_counters.bytes_recv
+            
+            # Handle counter wraparound (rare but possible)
+            if sent_delta < 0:
+                sent_delta = 0
+            if recv_delta < 0:
+                recv_delta = 0
+            
+            # Compute rates (bytes per second)
+            sent_rate = sent_delta / delta_t
+            recv_rate = recv_delta / delta_t
+            
+            # Update state
+            self._last_counters = current
+            self._last_time = now
+            self._last_sent_rate = sent_rate
+            self._last_recv_rate = recv_rate
+            
+            return (sent_rate, recv_rate)
+
+
+# Global tracker instance
+net_tracker = NetworkRateTracker()
+
 
 # -----------------------------
 # Utility: Run task in background
@@ -75,12 +135,15 @@ def memory_leak():
 
 
 def disk_flood():
+    """Write 100MB to /tmp — with tmpfs (108MB), this hits ~92% usage."""
     filepath = "/tmp/dummy_flood.bin"
-    with open(filepath, "wb") as f:
-        f.write(os.urandom(100 * 1024 * 1024))  # 100MB file
-    time.sleep(CHAOS_DURATION)
-    if os.path.exists(filepath):
-        os.remove(filepath)
+    try:
+        with open(filepath, "wb") as f:
+            f.write(os.urandom(100 * 1024 * 1024))  # 100MB file
+        time.sleep(CHAOS_DURATION)
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
 
 def traffic_spike():
@@ -116,19 +179,29 @@ def multi_vector():
 def metrics():
     cpu = psutil.cpu_percent(interval=0.2)
     memory = psutil.virtual_memory().percent
-    disk = psutil.disk_usage("/").percent
-    net = psutil.net_io_counters()
+
+    # ✅ Report the HIGHER of root disk or /tmp usage
+    # With tmpfs on /tmp, disk_flood will show ~92% on /tmp
+    disk_root = psutil.disk_usage("/").percent
+    try:
+        disk_tmp = psutil.disk_usage("/tmp").percent
+    except Exception:
+        disk_tmp = 0.0
+    disk = max(disk_root, disk_tmp)
+
+    # ✅ Rate-based network metrics (bytes/sec)
+    net_sent_rate, net_recv_rate = net_tracker.get_rates()
+
     processes = len(psutil.pids())
 
     return jsonify({
         "cpu_percent": cpu,
         "memory_percent": memory,
-        "disk_percent": disk,
-        "net_bytes_sent": net.bytes_sent,
-        "net_bytes_recv": net.bytes_recv,
+        "disk_percent": round(disk, 1),
+        "net_bytes_sent": int(net_sent_rate),
+        "net_bytes_recv": int(net_recv_rate),
         "active_processes": processes
     })
-
 
 @app.route("/health", methods=["GET"])
 def health():

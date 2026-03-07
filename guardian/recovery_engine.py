@@ -374,18 +374,7 @@ def is_safe_mode_active() -> bool:
 def select_and_execute(classification: str, score: float) -> str:
     """
     Routes a classification label to the correct recovery action.
-
-    Decision table:
-      PROCESS_CRASH    → auto_restart_on_crash    (highest priority)
-      CPU_OVERLOAD     → kill_heavy_process
-      MEMORY_LEAK      → restart_container
-      DISK_PRESSURE    → cleanup_logs
-      TRAFFIC_SPIKE    → activate_rate_limiting
-      ANOMALY_DETECTED → activate_safe_mode       (catch-all for unknown anomalies)
-      NORMAL           → (no action, returns early)
-
-    The score is logged for audit but does not alter the routing —
-    guardian.py already filters on score > 0.65 before calling here.
+    CPU_OVERLOAD tries kill_heavy_process first, falls back to restart_container.
     """
     logger.warning(
         "[RECOVERY] select_and_execute called — classification=%s  score=%.3f",
@@ -396,7 +385,14 @@ def select_and_execute(classification: str, score: float) -> str:
         return auto_restart_on_crash(classification)
 
     elif classification == "CPU_OVERLOAD":
-        return kill_heavy_process(classification)
+        # Try kill first; if it fails/skips, fall back to restart
+        result = kill_heavy_process(classification)
+        if "SKIPPED" in result or "FAILED" in result:
+            logger.warning(
+                "[RECOVERY] kill_heavy_process unsuccessful, falling back to restart_container"
+            )
+            result = restart_container(classification)
+        return result
 
     elif classification == "MEMORY_LEAK":
         return restart_container(classification)
@@ -411,7 +407,6 @@ def select_and_execute(classification: str, score: float) -> str:
         return activate_safe_mode(classification)
 
     else:
-        # NORMAL or unrecognised — do nothing
         logger.debug(
             "[RECOVERY] No action for classification=%s (score=%.3f)",
             classification, score
